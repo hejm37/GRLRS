@@ -1,0 +1,7 @@
+# Ignore intermediate files
+data/model/*
+data/result/*
+data/run_time/*
+
+# Ignore python cache files
+src/__pycache__
