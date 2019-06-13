@@ -1,5 +1,6 @@
 # coding: utf-8
 
+from collections import deque
 from scipy.sparse import coo_matrix
 from tqdm import tqdm
 import run_time_tools
@@ -21,10 +22,28 @@ class Env():
         self.a = 2.0 / (float(self.config['ENV']['MAX_RATING']) -
                         float(self.config['ENV']['MIN_RATING']))
         self.b = - (float(self.config['ENV']['MAX_RATING']) +
-                    float(self.config['ENV']['MIN_RATING'])) /                      \
+                    float(self.config['ENV']['MIN_RATING'])) /      \
             (float(self.config['ENV']['MAX_RATING']) -
              float(self.config['ENV']['MIN_RATING']))
 
+        # calculate boredom
+        self.beta = float(self.config['ENV']['BETA'])
+        self.boredom_len = int(self.config['ENV']['BOREDOM_LENGTH'])
+        self.boredom_order = int(self.config['ENV']['BOREDOM_ORDER'])
+        self.genre_cnt = int(self.config['GENRE']['GENRE_COUNT'])
+        self.genre_paras = [[] for i in range(self.genre_cnt)]   # dict to list
+        genres = [self.config['GENRE']['GENRE_'+str(i)] 
+                    for i in range(self.genre_cnt)]     # name only used in visulization and read genre_paras
+        for i in range(self.genre_cnt):
+            for j in range(self.boredom_order + 1):
+                self.genre_paras[i].append(float(self.config['GENRE'][genres[i] + '_' + str(j)]))
+
+        # read movies' genres file
+        genre_file_path = '../data/rating/' + self.config['ENV']['GENRE_FILE']
+        self.item_genre, self.genre_items = utils.read_genre_file(genre_file_path, self.genre_cnt)
+        self.genre_item_nums = [len(items) for items in self.genre_items]
+
+        # read rating file
         if not user_num is None:
             self.user_num = user_num
             self.item_num = item_num
@@ -95,6 +114,7 @@ class Env():
         self.con_not_pos_count = 0
         self.all_neg_count = 0
         self.all_pos_count = 0
+        self.past_w_items = deque([], self.boredom_len)
         self.history_items = set()
 
     def get_relevant_item_num(self):
@@ -142,7 +162,7 @@ class Env():
                 len(self.history_items) == self.item_num:
             reward[1] = True
 
-        reward[0] += self.alpha * sr
+        reward[0] += self.alpha * sr + self.beta * self.get_boredom(item_id)
         return (reward[0], reward[1])
 
     def get_statistic(self):
@@ -160,6 +180,20 @@ class Env():
                   con_neg_count, con_pos_count, con_zero_count,
                   con_not_neg_count, con_not_pos_count]
         return [item / float(self.episode_length) for item in result]
+
+    def get_boredom(self, item_id):
+        # calculate rho(s, a)
+        length = len(self.past_w_items)
+        rho = 0
+        for i in range(length):
+            if self.item_genre[self.past_w_items[i]] == self.item_genre[item_id]:
+                rho += 1 / (i+1)
+        # calculate r_b(s, a)
+        reward_b = 0
+        genre_of_item = self.item_genre[item_id]
+        for i in range(len(self.genre_paras[genre_of_item])):
+            reward_b += self.genre_paras[genre_of_item][i] * rho**i
+        return reward_b
 
     def get_rating(self, item_id):
         return self.r_matrix[self.user_id, item_id]
