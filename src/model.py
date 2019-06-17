@@ -1123,8 +1123,8 @@ class GRLRS():
         self.test_user_num = int(
             self.user_num/self.eval_batch_size)*self.eval_batch_size-self.boundry_user_id
         # self.bc_dim = int(math.ceil(math.log(self.item_num, self.child_num)))
-        self.bc_dims = [int(math.ceil(math.log(item_num))) 
-                        for item_num in self.forward_env.genre_item_nums]        # DEBUG0
+        self.bc_dims = max([int(math.ceil(math.log(item_num))) 
+                        for item_num in self.forward_env.genre_item_nums])        # DEBUG0, use the max depth
 
         self.env = [Env(self.config, self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num) for i in range(
             max(self.train_batch_size, self.eval_batch_size * int(math.ceil(self.user_num / self.eval_batch_size))))]
@@ -1134,6 +1134,8 @@ class GRLRS():
         self.rnn_output_dim = self.rnn_input_dim
         self.layer_units = [
             self.statistic_dim + self.rnn_output_dim] + self.hidden_units + [self.child_num]
+        self.layer_upper = [
+            self.statistic_dim + self.rnn_output_dim] + self.hidden_units + [self.forward_env.genre_cnt]
 
         self.is_eval = False
         self.qs_mean_list = []
@@ -1146,7 +1148,7 @@ class GRLRS():
 
         tree_model = utils.pickle_load(self.tree_file_path)
         self.id_to_code, self.code_to_id = (
-            tree_model['id_to_code'], tree_model['code_to_id'])
+            tree_model['id_to_code'], tree_model['code_to_id'])     # DEBUG0: code_to_id should be a list
         self.aval_val = self.get_aval()
         self.log.log('making graph')
         self.make_graph()
@@ -1167,8 +1169,11 @@ class GRLRS():
                                                 2, None, self.rnn_output_dim], name='forward_rnn_state')
         self.cur_q = tf.placeholder(
             dtype=tf.float32, shape=[None], name='cur_qs')      # current q value
+        self.cur_genre = tf.placeholder(
+            dtype=tf.int32, shape=[None], name='cur_genres')
         self.cur_action = tf.placeholder(
             dtype=tf.int32, shape=[None], name='cur_actions')   # current action value
+        self.pn_outputs = [[[] for g in range(self.forward_env.genre_cnt)] for i in range(self.bc_dims)]
 
         self.action_embeddings = tf.constant(
             dtype=tf.float32, value=self.forward_env.item_embedding)
@@ -1205,186 +1210,201 @@ class GRLRS():
             self.result_file_path = model['result_file_path']
             self.storage = utils.pickle_load(self.result_file_path)
         else:               # DEBUG0
-            self.W_list = [[tf.Variable(self.init_matrix(shape=[self.node_num_before_depth_i(bc_dim), self.layer_units[i], self.layer_units[i + 1]]))
-                           for i in range(len(self.layer_units) - 1)] for bc_dim in self.bc_dims]
-            self.b_list = [[tf.Variable(self.init_matrix(shape=[self.node_num_before_depth_i(bc_dim), self.layer_units[i + 1]]))
-                           for i in range(len(self.layer_units) - 1)] for bc_dim in self.bc_dims]
+            self.W_upper = [tf.Variable(self.init_matrix(shape=[self.layer_upper[i], self.layer_upper[i + 1]])) 
+                            for i in range(len(self.layer_upper) - 1)]
+            self.b_upper = [tf.Variable(self.init_matrix(shape=[self.layer_upper[i+1]]))
+                            for i in range(len(self.layer_upper) - 1)]
+            self.W_list = [[tf.Variable(self.init_matrix(shape=[self.node_num_before_depth_i(self.bc_dims), self.layer_units[i], self.layer_units[i + 1]]))
+                           for i in range(len(self.layer_units) - 1)] for i in range(self.forward_env.genre_cnt)]
+            self.b_list = [[tf.Variable(self.init_matrix(shape=[self.node_num_before_depth_i(self.bc_dims), self.layer_units[i + 1]]))
+                           for i in range(len(self.layer_units) - 1)] for i in range(self.forward_env.genre_cnt)]
 
         # map hidden state to action
         # variables
-        self.code2id = tf.constant(value=self.code_to_id, dtype=tf.int32)
-        self.aval_list = tf.Variable(np.tile(np.expand_dims(self.aval_val, 1), [1, self.train_batch_size, 1]), dtype=tf.float32)
-        self.aval_eval_list = tf.Variable(np.tile(np.expand_dims(self.aval_val, 1), [1, self.eval_batch_size, 1]), dtype=tf.float32)
+        self.code2id = tf.constant(value=self.code_to_id, dtype=tf.int32)   # Debug0: add a dimension
+        self.aval_list = tf.Variable(np.tile(np.expand_dims(self.aval_val, 2), [1, 1, self.train_batch_size, 1]), dtype=tf.float32)
+        self.aval_eval_list = tf.Variable(np.tile(np.expand_dims(self.aval_val, 2), [1, 1, self.eval_batch_size, 1]), dtype=tf.float32)
         self.eval_probs = []
-
-        # constant
-        self.pre_shift = tf.constant(value=np.zeros(
-            shape=[self.train_batch_size]), dtype=tf.int32)
-        self.pre_mul_choice = tf.constant(value=np.zeros(
-            shape=[self.train_batch_size]), dtype=tf.int32)
-        self.action_index = tf.constant(value=np.zeros(
-            shape=[self.train_batch_size]), dtype=tf.int32)
-        self.pre_shift_eval = tf.constant(value=np.zeros(
-            shape=[self.eval_batch_size]), dtype=tf.int32)
-        self.pre_max_choice_eval = tf.constant(value=np.zeros(
-            shape=[self.eval_batch_size]), dtype=tf.int32)
-        self.action_index_eval = tf.constant(value=np.zeros(
-            shape=[self.eval_batch_size]), dtype=tf.int32)
 
         self.aval_list_t = self.aval_list
         self.aval_eval_list_t = self.aval_eval_list
 
+        # constant  # TODO: check how it should be
+        pre_shift = tf.constant(value=np.zeros(
+            shape=[self.train_batch_size]), dtype=tf.int32)
+        pre_mul_choice = tf.constant(value=np.zeros(
+            shape=[self.train_batch_size]), dtype=tf.int32)
+        self.action_indexes = []
+        pre_shift_eval = tf.constant(value=np.zeros(
+            shape=[self.eval_batch_size]), dtype=tf.int32)
+        pre_max_choice_eval = tf.constant(value=np.zeros(
+            shape=[self.eval_batch_size]), dtype=tf.int32)
+        self.action_indexes_eval = []
+
         # get action index
         # for sampling, using multinomial
-        for i in range(self.bc_dim):
-            self.forward_index = self.node_num_before_depth_i(i) + self.child_num * self.pre_shift + tf.cast(self.pre_mul_choice, tf.int32)
-            if i == 0:
-                h = self.user_state
+        ## Upper layer
+        h = self.user_state
+        for k in range(len(self.W_upper)):
+            if k == (len(self.W_upper) - 1):
+                self.forward_prob_upper = tf.nn.softmax(tf.matmul(h, self.W_upper[k]) + self.b_upper[k], axis=1)
             else:
-                h = tf.expand_dims(self.user_state, axis=1)         # WHY??
-            for k in range(len(self.W_list)):
-                if k == (len(self.W_list) - 1):
-                    # for speeding up, do not use embedding_lookup when i==0.
-                    if i == 0:
-                        self.forward_prob = tf.nn.softmax(
-                            tf.matmul(h, self.W_list[k][0]) + self.b_list[k][0], axis=1)
-                    else:
-                        self.forward_prob = tf.nn.softmax(tf.squeeze(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[k], self.forward_index)) +
-                                                                     tf.expand_dims(tf.nn.embedding_lookup(self.b_list[k], self.forward_index), axis=1)), axis=1)
-                else:
-                    if i == 0:
-                        h = tf.nn.relu(
-                            tf.matmul(h, self.W_list[k][0]) + self.b_list[k][0])
-                    else:
-                        h = tf.nn.relu(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[k], self.forward_index)) +
-                                       tf.expand_dims(tf.nn.embedding_lookup(self.b_list[k], self.forward_index), axis=1))
+                h = tf.nn.relu(tf.matmul(h, self.W_upper[k]) + self.b_upper[k])
+        self.aval_item_num_upper = tf.transpose(tf.squeeze(tf.reduce_sum(self.aval_list[:, :, :, 0], axis=1)))
+        self.aval_prob_upper = self.aval_item_num_upper / \
+            tf.reduce_sum(self.aval_item_num_upper, axis=1, keep_dims=True)
+        self.mix_prob_upper = tf.clip_by_value(
+            self.forward_prob_upper, clip_value_min=1e-30, clip_value_max=1.0) * self.aval_prob_upper
+        self.real_prob_logit_upper = tf.log(
+            self.mix_prob_upper / tf.reduce_sum(self.mix_prob_upper, axis=1, keep_dims=True))
+        self.pre_mul_choice_upper = tf.cast(tf.squeeze(tf.multinomial(
+            logits=self.real_prob_logit_upper, num_samples=1)), tf.float32)
+        # Don't need to update self.aval_list
+        self.action_index_upper = tf.cast(self.pre_mul_choice_upper, tf.int32)
 
-            self.pre_shift = self.child_num * self.pre_shift + \
-                tf.cast(self.pre_mul_choice, tf.int32)              # WHY??
-            self.aval_item_num_sum = 0                              # unused
-            self.gather_index = tf.transpose(tf.reshape(tf.concat([tf.reshape(tf.tile(tf.expand_dims(tf.range(self.child_num), 1), [1, self.train_batch_size]), [-1, 1]),
-                                                                   tf.tile(tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1),
-                                                                                      tf.expand_dims(self.forward_index, axis=1)], axis=1), [self.child_num, 1])], axis=1),
+        ## Genre-specific sub-tree
+        for g in range(self.forward_env.genre_cnt):
+            action_index = tf.constant(value=np.zeros(shape=[self.train_batch_size]), dtype=tf.int32)
+            for i in range(self.bc_dims):
+                forward_index = self.node_num_before_depth_i(i) + self.child_num * pre_shift + tf.cast(pre_mul_choice, tf.int32)
+                if i == 0:
+                    h = self.user_state
+                else:
+                    h = tf.expand_dims(self.user_state, axis=1)
+                for k in range(len(self.W_list[g])):
+                    if k == (len(self.W_list[g]) - 1):
+                        # for speeding up, do not use embedding_lookup when i==0.   # I am wondering how much sppeed up is achieved?
+                        if i == 0:
+                            forward_prob = tf.nn.softmax(
+                                tf.matmul(h, self.W_list[g][k][0]) + self.b_list[g][k][0], axis=1)
+                        else:
+                            forward_prob = tf.nn.softmax(tf.squeeze(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[g][k], forward_index)) +
+                                                                    tf.expand_dims(tf.nn.embedding_lookup(self.b_list[g][k], forward_index), axis=1)), axis=1)
+                        self.pn_outputs[i][g] = forward_prob
+                    else:
+                        if i == 0:
+                            h = tf.nn.relu(
+                                tf.matmul(h, self.W_list[g][k][0]) + self.b_list[g][k][0])
+                        else:
+                            h = tf.nn.relu(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[g][k], forward_index)) +
+                                           tf.expand_dims(tf.nn.embedding_lookup(self.b_list[g][k], forward_index), axis=1))
+
+                pre_shift = self.child_num * pre_shift + tf.cast(pre_mul_choice, tf.int32)
+                gather_index = tf.transpose(tf.reshape(tf.concat([tf.reshape(tf.tile(tf.expand_dims(tf.range(self.child_num), 1), [1, self.train_batch_size]), [-1, 1]),
+                                                                  tf.tile(tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1),
+                                                                                     tf.expand_dims(forward_index, axis=1)], axis=1), [self.child_num, 1])], axis=1),
                                                         [self.child_num, self.train_batch_size, 3]), [1, 0, 2])
-            self.aval_item_num_list = tf.gather_nd(
-                self.aval_list, self.gather_index)
-            self.aval_prob = self.aval_item_num_list / \
-                tf.reduce_sum(self.aval_item_num_list, axis=1, keep_dims=True)
-            self.mix_prob = tf.clip_by_value(
-                self.forward_prob, clip_value_min=1e-30, clip_value_max=1.0) * self.aval_prob
-            # self.mix_prob = self.forward_prob * (1.0 - tf.cast(tf.equal(self.aval_prob, 0.0), tf.float32))
-            self.real_prob_logit = tf.log(
-                self.mix_prob / tf.reduce_sum(self.mix_prob, axis=1, keep_dims=True))
-            self.pre_mul_choice = tf.cast(tf.squeeze(tf.multinomial(
-                logits=self.real_prob_logit, num_samples=1)), tf.float32)
-            self.aval_list = self.aval_list - tf.concat([tf.expand_dims(tf.one_hot(indices=self.forward_index, depth=self.node_num_before_depth_i(self.bc_dim)) * tf.expand_dims(tf.cast(
-                tf.equal(self.pre_mul_choice, tf.constant(np.ones(shape=[self.train_batch_size]) * j, dtype=tf.float32)), tf.float32), axis=1), axis=0) for j in range(self.child_num)], axis=0)
-            self.action_index = self.action_index * self.child_num + \
-                tf.cast(self.pre_mul_choice, tf.int32)
+                aval_item_num_list = tf.gather_nd(self.aval_list[g], gather_index)
+                aval_prob = aval_item_num_list / tf.reduce_sum(aval_item_num_list, axis=1, keep_dims=True)
+                mix_prob = tf.clip_by_value(forward_prob, clip_value_min=1e-30, clip_value_max=1.0) * aval_prob
+                real_prob_logit = tf.log(mix_prob / tf.reduce_sum(mix_prob, axis=1, keep_dims=True))
+                pre_mul_choice = tf.cast(tf.squeeze(tf.multinomial(logits=real_prob_logit, num_samples=1)), tf.float32)
+                self.aval_list[g] = self.aval_list[g] - tf.concat([tf.expand_dims(tf.one_hot(indices=forward_index, depth=self.node_num_before_depth_i(self.bc_dims)) * tf.expand_dims(tf.cast(
+                    tf.equal(pre_mul_choice, tf.constant(np.ones(shape=[self.train_batch_size]) * j, dtype=tf.float32)), tf.float32), axis=1), axis=0) for j in range(self.child_num)], axis=0) 
+                action_index = action_index * self.child_num + tf.cast(pre_mul_choice, tf.int32)
+            self.action_indexes.append(action_index)
 
         # for evaluation, using maximum
-        for i in range(self.bc_dim):
-            self.forward_index_eval = self.node_num_before_depth_i(
-                i) + self.child_num * self.pre_shift_eval + tf.cast(self.pre_max_choice_eval, tf.int32)
-            if i == 0:
-                h = self.user_state
+        ## Upper layer
+        h = self.user_state
+        for k in range(len(self.W_upper)):
+            if k == (len(self.W_upper) - 1):
+                self.forward_prob_upper_eval = tf.nn.softmax(tf.matmul(h, self.W_upper[k]) + self.b_upper[k], axis=1)
             else:
-                h = tf.expand_dims(self.user_state, axis=1)
-            for k in range(len(self.W_list)):
-                if k == (len(self.W_list) - 1):
-                    if i == 0:
-                        self.forward_prob_eval = tf.nn.softmax(
-                            tf.matmul(h, self.W_list[k][0]) + self.b_list[k][0], axis=1)
-                    else:
-                        self.forward_prob_eval = tf.nn.softmax(tf.squeeze(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[k], self.forward_index_eval)) +
-                                                                          tf.expand_dims(tf.nn.embedding_lookup(self.b_list[k], self.forward_index_eval), axis=1)), axis=1)
+                h = tf.nn.relu(tf.matmul(h, self.W_upper[k]) + self.b_upper[k])
+        self.aval_item_num_upper_eval = tf.transpose(tf.squeeze(tf.reduce_sum(self.aval_list[:, :, :, 0], axis=1)))
+        self.aval_prob_upper_eval = self.aval_item_num_upper_eval / \
+            tf.reduce_sum(self.aval_item_num_upper_eval, axis=1, keep_dims=True)
+        self.mix_prob_upper_eval = tf.clip_by_value(
+            self.forward_prob_upper_eval, clip_value_min=1e-30, clip_value_max=1.0) * self.aval_prob_upper
+        self.real_prob_logit_upper_eval = tf.log(
+            self.mix_prob_upper_eval / tf.reduce_sum(self.mix_prob_upper_eval, axis=1, keep_dims=True))
+        self.pre_max_choice_upper_eval = tf.cast(tf.squeeze(tf.argmax(
+            input=self.real_prob_logit_upper, axis=1)), tf.float32)
+        # Don't need to update self.aval_list
+        self.action_index_upper_eval = tf.cast(self.pre_mul_choice_upper, tf.int32)
+
+        ## Genre-specific sub-tree
+        for g in range(self.forward_env.genre_cnt):
+            action_index_eval = tf.constant(value=np.zeros(shape=[self.eval_batch_size]), dtype=tf.int32)
+            for i in range(self.bc_dims):
+                forward_index_eval = self.node_num_before_depth_i(
+                    i) + self.child_num * pre_shift_eval + tf.cast(pre_max_choice_eval, tf.int32)
+                if i == 0:
+                    h = self.user_state
                 else:
-                    if i == 0:
-                        h = tf.nn.relu(
-                            tf.matmul(h, self.W_list[k][0]) + self.b_list[k][0])
+                    h = tf.expand_dims(self.user_state, axis=1)
+                for k in range(len(self.W_list[g])):
+                    if k == (len(self.W_list[g]) - 1):
+                        if i == 0:
+                            forward_prob_eval = tf.nn.softmax(
+                                tf.matmul(h, self.W_list[g][k][0]) + self.b_list[g][k][0], axis=1)
+                        else:
+                            forward_prob_eval = tf.nn.softmax(tf.squeeze(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[g][k], forward_index_eval)) +
+                                                                            tf.expand_dims(tf.nn.embedding_lookup(self.b_list[g][k], forward_index_eval), axis=1)), axis=1)
                     else:
-                        h = tf.nn.relu(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[k], self.forward_index_eval)) +
-                                       tf.expand_dims(tf.nn.embedding_lookup(self.b_list[k], self.forward_index_eval), axis=1))
+                        if i == 0:
+                            h = tf.nn.relu(
+                                tf.matmul(h, self.W_list[g][k][0]) + self.b_list[g][k][0])
+                        else:
+                            h = tf.nn.relu(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[g][k], forward_index_eval)) +
+                                        tf.expand_dims(tf.nn.embedding_lookup(self.b_list[g][k], forward_index_eval), axis=1))
 
-            self.eval_probs.append(self.forward_prob_eval)
-            self.pre_shift_eval = self.child_num * self.pre_shift_eval + \
-                tf.cast(self.pre_max_choice_eval, tf.int32)
-            self.gather_index_eval = tf.transpose(tf.reshape(tf.concat([tf.reshape(tf.tile(tf.expand_dims(tf.range(self.child_num), 1), [1, self.eval_batch_size]), [-1, 1]), tf.tile(tf.concat([tf.expand_dims(
-                tf.range(self.eval_batch_size), axis=1), tf.expand_dims(self.forward_index_eval, axis=1)], axis=1), [self.child_num, 1])], axis=1), [self.child_num, self.eval_batch_size, 3]), [1, 0, 2])
-            self.aval_item_num_eval_list = tf.gather_nd(
-                self.aval_eval_list, self.gather_index_eval)
-            self.aval_prob_eval = self.aval_item_num_eval_list / \
-                tf.reduce_sum(self.aval_item_num_eval_list,
-                              axis=1, keep_dims=True)
-            self.mix_prob_eval = tf.clip_by_value(
-                self.forward_prob_eval, clip_value_min=1e-30, clip_value_max=1.0) * self.aval_prob_eval
-            self.real_prob_logit_eval = self.mix_prob_eval / \
-                tf.reduce_sum(self.mix_prob_eval, axis=1, keep_dims=True)
-            self.pre_max_choice_eval = tf.cast(tf.squeeze(
-                tf.argmax(input=self.real_prob_logit_eval, axis=1)), tf.float32)
-            self.aval_eval_list = self.aval_eval_list - tf.concat([tf.expand_dims(tf.one_hot(indices=self.forward_index_eval, depth=self.node_num_before_depth_i(self.bc_dim)) * tf.expand_dims(
-                tf.cast(tf.equal(self.pre_max_choice_eval, tf.constant(np.ones(shape=[self.eval_batch_size]) * j, dtype=tf.float32)), tf.float32), axis=1), axis=0) for j in range(self.child_num)], axis=0)
-            self.action_index_eval = self.action_index_eval * \
-                self.child_num + tf.cast(self.pre_max_choice_eval, tf.int32)
+                self.eval_probs.append(forward_prob_eval)   # TODO
+                pre_shift_eval = self.child_num * pre_shift_eval + tf.cast(pre_max_choice_eval, tf.int32)
+                gather_index_eval = tf.transpose(tf.reshape(tf.concat([tf.reshape(tf.tile(tf.expand_dims(tf.range(self.child_num), 1), [1, self.eval_batch_size]), [-1, 1]), tf.tile(tf.concat([tf.expand_dims(
+                    tf.range(self.eval_batch_size), axis=1), tf.expand_dims(forward_index_eval, axis=1)], axis=1), [self.child_num, 1])], axis=1), [self.child_num, self.eval_batch_size, 3]), [1, 0, 2])
+                aval_item_num_eval_list = tf.gather_nd(self.aval_eval_list[g], gather_index_eval)
+                aval_prob_eval = aval_item_num_eval_list / tf.reduce_sum(aval_item_num_eval_list, axis=1, keep_dims=True)
+                mix_prob_eval = tf.clip_by_value(forward_prob_eval, clip_value_min=1e-30, clip_value_max=1.0) * aval_prob_eval
+                real_prob_logit_eval = mix_prob_eval / tf.reduce_sum(mix_prob_eval, axis=1, keep_dims=True)
+                pre_max_choice_eval = tf.cast(tf.squeeze(tf.argmax(input=real_prob_logit_eval, axis=1)), tf.float32)
+                self.aval_eval_list[g] = self.aval_eval_list[g] - tf.concat([tf.expand_dims(tf.one_hot(indices=forward_index_eval, depth=self.node_num_before_depth_i(self.bc_dims)) * tf.expand_dims(
+                    tf.cast(tf.equal(pre_max_choice_eval, tf.constant(np.ones(shape=[self.eval_batch_size]) * j, dtype=tf.float32)), tf.float32), axis=1), axis=0) for j in range(self.child_num)], axis=0)
+                action_index_eval = action_index_eval * self.child_num + tf.cast(pre_max_choice_eval, tf.int32)
+            self.action_indexes_eval.append(action_index_eval)
 
-        self.eval_probs = tf.concat(self.eval_probs, axis=1)
+        self.eval_probs = tf.concat(self.eval_probs, axis=1)    # Unused till now
 
         # update avalable children items at each node
         self.update_aval_list = tf.assign(self.aval_list_t, self.aval_list)
         self.update_aval_eval_list = tf.assign(
             self.aval_eval_list_t, self.aval_eval_list)
 
-        # assign avalable children items at each node
+        # assign avalable children items at each node # TODO: DON't understand
+        self.aval_list_v = tf.placeholder(
+            dtype=tf.float32, shape=self.aval_list_t.get_shape())
+        self.assign_aval_list = tf.assign(self.aval_list_t, self.aval_list_v)
         self.aval_eval_list_v = tf.placeholder(
             dtype=tf.float32, shape=self.aval_eval_list_t.get_shape())
         self.assign_aval_eval_list = tf.assign(
             self.aval_eval_list_t, self.aval_eval_list_v)
-        self.aval_list_v = tf.placeholder(
-            dtype=tf.float32, shape=self.aval_list_t.get_shape())
-        self.assign_aval_list = tf.assign(self.aval_list_t, self.aval_list_v)
 
         # get action
-        self.forward_sampled_action = tf.nn.embedding_lookup(
-            self.code_to_id, self.action_index)
-        self.forward_sampled_action_eval = tf.nn.embedding_lookup(
-            self.code_to_id, self.action_index_eval)
+        self.forward_sampled_actions = [tf.nn.embedding_lookup(self.code_to_id[g], self.action_indexes[g]) 
+                                        for g in range(self.forward_env.genre_cnt)]
+        self.forward_sampled_actions_eval = [tf.nn.embedding_lookup(self.code_to_id[g], self.action_indexes_eval[g])
+                                             for g in range(self.forward_env.genre_cnt)]
 
-        # get policy network outputs
-        self.pre_c = tf.cast(tf.concat([tf.zeros(shape=[self.train_batch_size, 1]), tf.nn.embedding_lookup(
-            self.bc_embeddings, self.cur_action)[:, 0:-1]], axis=1), dtype=tf.int32)
-        self.pre_con = tf.Variable(
-            tf.zeros(shape=[self.train_batch_size, 1], dtype=tf.int32))
-        self.index = []
-        for i in range(self.bc_dim):
-            self.index.append(self.node_num_before_depth_i(
-                i) + self.child_num * self.pre_con + self.pre_c[:, i:i+1])
-            self.pre_con = self.pre_con * self.child_num + self.pre_c[:, i:i+1]
-        self.index = tf.concat(self.index, axis=1)
-        self.pn_outputs = []
-        for i in range(self.bc_dim):
-            h = tf.expand_dims(self.user_state, axis=1)
-            for k in range(len(self.W_list)):
-                if k == (len(self.W_list) - 1):
-                    self.pn_outputs.append(tf.nn.softmax(tf.squeeze(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[k], self.index[:, i])) +
-                                                                    tf.expand_dims(tf.nn.embedding_lookup(self.b_list[k], self.index[:, i]), axis=1))))
-                else:
-                    h = tf.nn.relu(tf.matmul(h, tf.nn.embedding_lookup(self.W_list[k], self.index[:, i])) +
-                                   tf.expand_dims(tf.nn.embedding_lookup(self.b_list[k], self.index[:, i]), axis=1))
+        # get policy network outputs    # TODO: Later.
+        # Get from the above loop.
+        # pn_outputs:  [(batch, genre_cnt, child_num)] * bc_dims
+        self.pn_outputs = [tf.transpose(tf.convert_to_tensor(self.pn_outputs[i], dtype=tf.float32), [1,0,2]) for i in range(self.bc_dims)]
 
         self.bias_variables = self.b_list + self.rnn_variables[3:]
         self.weight_variables = self.W_list + self.rnn_variables[:3]
 
-        self.train_mse = tf.reduce_mean(
-            tf.square(tf.concat(self.pn_outputs, axis=1) - 1.0/self.child_num), axis=1)
-        self.a_code = tf.nn.embedding_lookup(
-            self.bc_embeddings, self.cur_action)
+        self.real_pn_outputs = [tf.nn.embedding_lookup(self.pn_outputs[i], self.cur_genre) for i in range(self.bc_dims)]
+        self.train_mse = tf.reduce_mean(tf.square(tf.concat(self.real_pn_outputs, axis=1) - 1.0/self.child_num), axis=1)
+        self.a_code = tf.nn.embedding_lookup(self.bc_embeddings, tf.concat([self.cur_genre, self.cur_action], axis=1))
         self.log_pi = tf.reduce_sum(
             tf.concat(
                 [tf.expand_dims(
                     tf.log(tf.clip_by_value(
-                        tf.gather_nd(self.pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1), tf.cast(self.a_code[:, i:i+1], tf.int32)], axis=1)), clip_value_min=1e-30, clip_value_max=1.0)
+                        tf.gather_nd(self.pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1), self.cur_genre, tf.cast(self.a_code[:, i:i+1], tf.int32)], axis=1)), clip_value_min=1e-30, clip_value_max=1.0)
                     ), axis=1)
-                 for i in range(self.bc_dim)], axis=1), axis=1)
+                 for i in range(self.bc_dims)], axis=1), axis=1)
+
         self.negative_likelyhood = -self.log_pi
         self.l2_norm = tf.add_n([tf.nn.l2_loss(item) for item in (
             self.weight_variables + self.bias_variables)])
@@ -1394,11 +1414,13 @@ class GRLRS():
             self.weighted_negative_likelyhood_with_l2_norm)
 
     # record how many items avalable in each child tree of each non-leaf node
-    def get_aval(self):
-        aval_list = np.zeros(
-            shape=[self.child_num, self.node_num_before_depth_i(self.bc_dim)], dtype=int)
-        self.rec_get_aval(aval_list, self.node_num_before_depth_i(
-            self.bc_dim-1), list(map(lambda x: int(x >= 0), self.code_to_id)))
+    def get_aval(self): # DEBUG0
+        aval_list = [np.zeros(
+            shape=[self.child_num, self.node_num_before_depth_i(self.bc_dims)], dtype=int) 
+            for i in range(self.forward_env.genre_cnt)]
+        for i in range(self.forward_env.genre_cnt):
+            self.rec_get_aval(aval_list[i], self.node_num_before_depth_i(
+                self.bc_dims-1), list(map(lambda x: int(x >= 0), self.code_to_id[i])))
         self.log.log('get_aval completed')
         return aval_list
 
