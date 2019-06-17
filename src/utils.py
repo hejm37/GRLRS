@@ -26,5 +26,5 @@ def read_genre_file(file_path, genre_cnt):
     genre_items = [[] for i in range(genre_cnt)]
     for i in range(len(genre_data)):
         item_genres.append(genre_data[i])
-        genre_items[genre_data[i]].append(i)
+        genre_items[int(genre_data[i])].append(i)
     return item_genres, genre_items
