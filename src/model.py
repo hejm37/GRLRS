@@ -1123,7 +1123,8 @@ class GRLRS():
         self.test_user_num = int(
             self.user_num/self.eval_batch_size)*self.eval_batch_size-self.boundry_user_id
         # self.bc_dim = int(math.ceil(math.log(self.item_num, self.child_num)))
-        self.bc_dims = max([int(math.ceil(math.log(item_num))) 
+        self.bc_dims = max([int(math.ceil(math.log(item_num, self.child_num))) 
+                        if item_num != 0 else 0
                         for item_num in self.forward_env.genre_item_nums])        # DEBUG0, use the max depth
 
         self.env = [Env(self.config, self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num) for i in range(
