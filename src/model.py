@@ -1538,7 +1538,7 @@ class GRLRS():
                          self.forward_rnn_state: rnn_state}
 
             # update avalable items and sample actions in a run since different multinomial sampling would lead to different result if splitted
-            run_list = [self.forward_sampled_action,
+            run_list = [self.forward_sampled_actions,
                         self.rnn_state, self.update_aval_list]
             sampled_action, rnn_state, _ = self.sess.run(run_list, feed_dict)
             action_list.append(sampled_action)
@@ -1613,7 +1613,7 @@ class GRLRS():
                              self.forward_reward: ars[1][step_count][start:end],
                              self.forward_statistic: ars[2][step_count][start:end],
                              self.forward_rnn_state: rnn_state}
-                run_list = [self.forward_sampled_action_eval, self.rnn_state,
+                run_list = [self.forward_sampled_actions_eval, self.rnn_state,
                             self.eval_probs, self.update_aval_eval_list]
                 result_list = self.sess.run(run_list, feed_dict)
                 sampled_action, rnn_state, probs = result_list[0:3]
