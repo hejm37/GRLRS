@@ -22,9 +22,10 @@ def pickle_load(file_path):
 # read all genres of each movie as a list: [genre], all in int32
 def read_genre_file(file_path, genre_cnt):
     genre_data = np.loadtxt(fname=file_path, delimiter='\t')
-    item_genres = []
+    item_genres, item_subId = [], []
     genre_items = [[] for i in range(genre_cnt)]
     for i in range(len(genre_data)):
         item_genres.append(int(genre_data[i]))
+        item_subId.append(len(genre_items[int(genre_data[i])]))
         genre_items[int(genre_data[i])].append(i)
-    return item_genres, genre_items
+    return item_genres, item_subId, genre_items

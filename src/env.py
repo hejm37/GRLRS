@@ -40,7 +40,8 @@ class Env():
 
         # read movies' genres file
         genre_file_path = '../data/rating/' + self.config['ENV']['GENRE_FILE']
-        self.item_genre, self.genre_items = utils.read_genre_file(genre_file_path, self.genre_cnt)
+        self.item_genre, self.item_subId, self.genre_items = \
+            utils.read_genre_file(genre_file_path, self.genre_cnt)
         self.genre_item_nums = [len(items) for items in self.genre_items]
 
         # read rating file

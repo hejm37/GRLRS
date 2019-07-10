@@ -21,6 +21,7 @@ class PRE_TRAIN():
         self.log = utils.Log()
 
         self.action_dim = int(self.config['META']['ACTION_DIM'])
+        self.genre_dim = int(self.config['GENRE']['GENRE_COUNT'])
         self.statistic_dim = int(self.config['META']['STATISTIC_DIM'])
         self.reward_dim = int(self.config['META']['REWARD_DIM'])
         self.batch_size = int(self.config['TPGR']['PRE_TRAINING_BATCH_SIZE'])
@@ -39,7 +40,7 @@ class PRE_TRAIN():
         self.rnn_file_path = '../data/run_time/%s_rnn_model_%s' % (
             self.config['ENV']['RATING_FILE'], self.config['TPGR']['RNN_MODEL_VS'].split('s')[0])
 
-        self.rnn_input_dim = self.action_dim + self.reward_dim + self.statistic_dim
+        self.rnn_input_dim = self.action_dim + self.genre_dim +  self.reward_dim + self.statistic_dim
         self.rnn_output_dim = self.rnn_input_dim
 
         self.forward_env = Env(self.config)
@@ -56,7 +57,9 @@ class PRE_TRAIN():
 
     def make_graph(self):
         # placeholders
-        self.pre_actions = [tf.placeholder(
+        self.pre_actions = [tf.placeholder(     # Same as GRLRS, pre_actions are in the large action space
+            dtype=tf.int32, shape=[None]) for i in range(self.pre_train_truncated_length)]
+        self.pre_genres = [tf.placeholder(
             dtype=tf.int32, shape=[None]) for i in range(self.pre_train_truncated_length)]
         self.pre_rewards = [tf.placeholder(dtype=tf.float32, shape=[
                                            None]) for i in range(self.pre_train_truncated_length)]
@@ -78,9 +81,11 @@ class PRE_TRAIN():
         # rnn input
         self.pre_a_embs = [tf.nn.embedding_lookup(
             self.action_embeddings, self.pre_actions[i]) for i in range(self.pre_train_truncated_length)]
+        one_hot_genres = [tf.one_hot(self.pre_genres[i], depth=self.forward_env.genre_cnt)
+                            for i in range(self.pre_train_truncated_length)]
         one_hot_rewards = [tf.one_hot(tf.cast(self.reward_dim * (1.0 - self.pre_rewards[i]) / 2,
                                               dtype=tf.int32), depth=self.reward_dim) for i in range(self.pre_train_truncated_length)]
-        self.pre_ars = [tf.concat([self.pre_a_embs[i], one_hot_rewards[i], self.pre_statistic[i]], axis=1)
+        self.pre_ars = [tf.concat([self.pre_a_embs[i], one_hot_genres[i], one_hot_rewards[i], self.pre_statistic[i]], axis=1)
                         for i in range(self.pre_train_truncated_length)]
 
         # rnn output
@@ -138,24 +143,24 @@ class PRE_TRAIN():
 
         return unit, sru_variables
 
-    def _get_initial_ars(self, seq_num=-1):
-        result = [[[]], [[]], [[]]]
-        if seq_num == -1:
-            seq_num = self.batch_size
-        for i in range(seq_num):
-            item_id = random.randint(0, self.item_num - 1)
-            reward = self.env[i].get_reward(item_id)
-            result[0][0].append(item_id)
-            result[1][0].append([reward[0]])
-            result[2][0].append((self.env[i].get_statistic()))
-        return result
+    # def _get_initial_ars(self, seq_num=-1):
+    #     result = [[[]], [[]], [[]]]
+    #     if seq_num == -1:
+    #         seq_num = self.batch_size
+    #     for i in range(seq_num):
+    #         item_id = random.randint(0, self.item_num - 1)
+    #         reward = self.env[i].get_reward(item_id)
+    #         result[0][0].append(item_id)
+    #         result[1][0].append([reward[0]])
+    #         result[2][0].append((self.env[i].get_statistic()))
+    #     return result
 
     def train(self):
         # sample random users
         for i in range(self.batch_size):
             user_id = random.randint(0, self.boundry_user_id - 1)
             self.env[i].reset(user_id)
-        ars = [[], [], []]
+        ars = [[], [], [], []]
 
         # only consider first max_item_num items
         action_value_list = np.array(
@@ -168,11 +173,13 @@ class PRE_TRAIN():
             ars[0].append([])
             ars[1].append([])
             ars[2].append([])
+            ars[3].append([])
             for j in range(self.batch_size):
                 reward = self.env[j].get_reward(sampled_action[j])
                 ars[0][-1].append(sampled_action[j])
-                ars[1][-1].append(reward[0])
-                ars[2][-1].append(self.env[j].get_statistic())
+                ars[1][-1].append(self.forward_env.item_genre[sampled_action[j]])
+                ars[2][-1].append(reward[0])
+                ars[3][-1].append(self.env[j].get_statistic())
 
         if self.pre_training_steps == 0:
             self.evaluate()
@@ -206,8 +213,9 @@ class PRE_TRAIN():
                              self.mask: mask_value}
                 for j in range(i + 1):
                     feed_dict[self.pre_actions[j]] = ars[0][j]
-                    feed_dict[self.pre_rewards[j]] = ars[1][j]
-                    feed_dict[self.pre_statistic[j]] = ars[2][j]
+                    feed_dict[self.pre_genres[j]] = ars[1][j]
+                    feed_dict[self.pre_rewards[j]] = ars[2][j]
+                    feed_dict[self.pre_statistic[j]] = ars[3][j]
                 _, rnn_state = self.sess.run(
                     [self.pre_train_op[i], self.cur_rnn_states_list[i]], feed_dict=feed_dict)
             else:
@@ -215,12 +223,11 @@ class PRE_TRAIN():
                              self.expected_pn_outputs: ground_truth,
                              self.mask: mask_value}
                 for j in range(self.pre_train_truncated_length):
-                    feed_dict[self.pre_actions[j]] = ars[0][i +
-                                                            1 - (self.pre_train_truncated_length - j)]
-                    feed_dict[self.pre_rewards[j]] = ars[1][i +
-                                                            1 - (self.pre_train_truncated_length - j)]
-                    feed_dict[self.pre_statistic[j]] = ars[2][i +
-                                                              1 - (self.pre_train_truncated_length - j)]
+                    truncated_index = i + 1 - (self.pre_train_truncated_length - j)
+                    feed_dict[self.pre_actions[j]] = ars[0][truncated_index]
+                    feed_dict[self.pre_genres[j]] = ars[1][truncated_index]
+                    feed_dict[self.pre_rewards[j]] = ars[2][truncated_index]
+                    feed_dict[self.pre_statistic[j]] = ars[3][truncated_index]
                 _, rnn_state = self.sess.run([self.pre_train_op[self.pre_train_truncated_length - 1],
                                               self.cur_rnn_states_list[self.pre_train_truncated_length - 1]], feed_dict=feed_dict)
             pre_rnn_state_list.append(rnn_state)
@@ -237,7 +244,7 @@ class PRE_TRAIN():
         for i in range(self.batch_size):
             user_id = random.randint(0, self.boundry_user_id - 1)
             self.env[i].reset(user_id)
-        ars = [[], [], []]
+        ars = [[], [], [], []]
 
         action_value_list = np.array(
             [range(self.max_item_num) for i in range(self.batch_size)])
@@ -249,11 +256,13 @@ class PRE_TRAIN():
             ars[0].append([])
             ars[1].append([])
             ars[2].append([])
+            ars[3].append([])
             for j in range(self.batch_size):
                 reward = self.env[j].get_reward(sampled_action[j])
                 ars[0][-1].append(sampled_action[j])
-                ars[1][-1].append(reward[0])
-                ars[2][-1].append(self.env[j].get_statistic())
+                ars[1][-1].append(self.forward_env.item_genre[sampled_action[j]])
+                ars[2][-1].append(reward[0])
+                ars[3][-1].append(self.env[j].get_statistic())
 
         ground_truth = np.zeros(
             dtype=float, shape=[self.batch_size, self.max_item_num])
@@ -280,8 +289,9 @@ class PRE_TRAIN():
                          self.expected_pn_outputs: ground_truth,
                          self.mask: mask_value,
                          self.pre_actions[0]: ars[0][i],
-                         self.pre_rewards[0]: ars[1][i],
-                         self.pre_statistic[0]: ars[2][i]}
+                         self.pre_genres[0]: ars[1][i],
+                         self.pre_rewards[0]: ars[2][i],
+                         self.pre_statistic[0]: ars[3][i]}
             rnn_state = self.sess.run(
                 self.cur_rnn_states_list[0], feed_dict=feed_dict)
             print('all zero rmse:%.3f, rnn rmse:%.3f, l2:%.3f' % tuple(self.sess.run(
@@ -302,18 +312,21 @@ class Tree():
         ), self.config['TPGR']['CLUSTERING_TYPE'].lower(), self.child_num, self.config['TPGR']['TREE_VS'])
 
         self.env = Env(self.config)
-        self.bc_dim = int(
-            math.ceil(math.log(self.env.item_num, self.child_num)))
+        self.bc_dims = max([int(math.ceil(math.log(item_num, self.child_num))) 
+                        if item_num != 0 else 0
+                        for item_num in self.env.genre_item_nums])        # DEBUG0, use the max depth
 
     def construct_tree(self):
-        id_to_code, code_to_id = self.build_mapping()
-        obj = {'id_to_code': id_to_code, 'code_to_id': code_to_id, 'dataset': self.config['ENV']['RATING_FILE'], 'child_num': int(
-            self.child_num), 'clustering_type': self.config['TPGR']['CLUSTERING_TYPE']}
+        id_to_code, code_to_id, code_to_real_id = self.build_mapping()
+        obj = {'id_to_code': id_to_code, 'code_to_id': code_to_id, 'code_to_real_id': code_to_real_id, 
+                'dataset': self.config['ENV']['RATING_FILE'], 'child_num': int(self.child_num), 
+                'clustering_type': self.config['TPGR']['CLUSTERING_TYPE']}
         utils.pickle_save(obj, self.tree_file_path)
 
     def build_mapping(self):
-        id_to_code = np.zeros(dtype=float, shape=[
-                              self.env.item_num, self.bc_dim])
+        id_to_code = [np.zeros(dtype=float, shape=[self.env.genre_item_nums[g], self.bc_dims])
+                        for g in range(self.env.genre_cnt)]
+        code_to_id, code_to_real_id = [], []
         id_to_vector = None
         if self.clustering_type != 'RANDOM':
             if not os.path.exists(self.clustering_vector_file_path):
@@ -321,16 +334,20 @@ class Tree():
                     self.config, self.sess)
             id_to_vector = np.loadtxt(
                 self.clustering_vector_file_path, delimiter='\t')
-        self.hierarchical_code(list(range(self.env.item_num)), (0, int(
-            math.pow(self.child_num, self.bc_dim))), id_to_code, id_to_vector)
-        code_to_id = self.get_code_to_id(id_to_code)
-        return (id_to_code, code_to_id)
+        for g in range(self.env.genre_cnt):
+            self.hierarchical_code(list(range(self.env.genre_item_nums[g])), (0, int(
+                math.pow(self.child_num, self.bc_dims))), id_to_code[g], id_to_vector)
+            code_to_id_g, code_to_real_id_g = self.get_code_to_id(id_to_code[g], g)
+            code_to_id.append(code_to_id_g)
+            code_to_real_id.append(code_to_real_id_g)
+
+        return (id_to_code, code_to_id, code_to_real_id)
 
     def get_code(self, id):
-        code = np.zeros(dtype=int, shape=[self.bc_dim])
-        for i in range(self.bc_dim):
+        code = np.zeros(dtype=int, shape=[self.bc_dims])
+        for i in range(self.bc_dims):
             c = id % self.child_num
-            code[self.bc_dim-i-1] = c
+            code[self.bc_dims-i-1] = c
             id = int(id / self.child_num)
             if id == 0:
                 break
@@ -461,17 +478,17 @@ class Tree():
     def dis(self, a, b):
         return np.power(np.sum(np.square(a-b)), 0.5)
 
-    def get_code_to_id(self, id_to_code):
-        result = - \
-            np.ones(
-                shape=[int(int(math.pow(self.child_num, float(self.bc_dim))))], dtype=int)
-        for i in range(len(id_to_code)):
-            code = id_to_code[i]
-            result[self.get_index(code)] = i
+    def get_code_to_id(self, id_to_code_g, g):
+        code_to_id_g = - np.ones(shape=[int(int(math.pow(self.child_num, float(self.bc_dims))))], dtype=int)
+        code_to_real_id_g = - np.ones(shape=[int(int(math.pow(self.child_num, float(self.bc_dims))))], dtype=int)
+        for i in range(len(id_to_code_g)):
+            code = id_to_code_g[i]
+            code_to_id_g[self.get_index(code)] = i
+            code_to_real_id_g[self.get_index(code)] = self.env.genre_items[g][i]
         print('leaf num count: %d\nitem num count: %d' %
-              (len(result), int(np.sum([int(item >= 0) for item in result]))))
+              (len(code_to_id_g), int(np.sum([int(item >= 0) for item in code_to_id_g]))))
 
-        return result
+        return code_to_id_g, code_to_real_id_g
 
     def get_index(self, code):
         result = 0
@@ -1148,8 +1165,8 @@ class GRLRS():
                 self.config['TPGR']['MODEL_LOAD_VS'].split('s')[-1])
 
         tree_model = utils.pickle_load(self.tree_file_path)
-        self.id_to_code, self.code_to_id = (
-            tree_model['id_to_code'], tree_model['code_to_id'])     # DEBUG0: code_to_id should be a list
+        self.id_to_code, self.code_to_id, self.code_to_real_id = (
+            tree_model['id_to_code'], tree_model['code_to_id'], tree_model['code_to_real_id'])
         self.aval_val = self.get_aval()
         self.log.log('making graph')
         self.make_graph()
@@ -1161,7 +1178,7 @@ class GRLRS():
         self.forward_action = tf.placeholder(                       # TODO: Need to convert item_sub_id to item_id!
             dtype=tf.int32, shape=[None], name='forward_action')
         self.forward_genre = tf.placeholder(
-            dtype=tf.int32, shape=[None], name='forward_genre')     # DEBUG0
+            dtype=tf.int32, shape=[None], name='forward_genre')
         self.forward_reward = tf.placeholder(
             dtype=tf.float32, shape=[None], name='forward_reward')
         self.forward_statistic = tf.placeholder(
@@ -1178,8 +1195,8 @@ class GRLRS():
 
         self.action_embeddings = tf.constant(
             dtype=tf.float32, value=self.forward_env.item_embedding)
-        self.bc_embeddings = tf.constant(
-            dtype=tf.float32, value=self.id_to_code)
+        self.bc_embeddings = [tf.constant(dtype=tf.float32, value=self.id_to_code[i])
+                                for i in range(self.forward_env.genre_cnt)]
 
         # RNN input
         self.forward_a_emb = tf.nn.embedding_lookup(            # forward action embedding
@@ -1222,24 +1239,20 @@ class GRLRS():
 
         # map hidden state to action
         # variables
-        self.code2id = tf.constant(value=self.code_to_id, dtype=tf.int32)   # Debug0: add a dimension
-        self.aval_list = tf.Variable(np.tile(np.expand_dims(self.aval_val, 2), [1, 1, self.train_batch_size, 1]), dtype=tf.float32)
-        self.aval_eval_list = tf.Variable(np.tile(np.expand_dims(self.aval_val, 2), [1, 1, self.eval_batch_size, 1]), dtype=tf.float32)
+        # self.code2id = tf.constant(value=self.code_to_id, dtype=tf.int32)   # Debug0: add a dimension; I comment it out.
+        self.aval_list = [tf.Variable(np.tile(np.expand_dims(self.aval_val[g], 1), [1, self.train_batch_size, 1]), dtype=tf.float32)
+                            for g in range(self.forward_env.genre_cnt)]
+        self.aval_eval_list = [tf.Variable(np.tile(np.expand_dims(self.aval_val[g], 1), [1, self.eval_batch_size, 1]), dtype=tf.float32)
+                                for g in range(self.forward_env.genre_cnt)]
         self.eval_probs = []
 
-        self.aval_list_t = self.aval_list
-        self.aval_eval_list_t = self.aval_eval_list
+        self.aval_list_t, self.aval_eval_list_t = [], []
+        for g in range(self.forward_env.genre_cnt):
+            self.aval_list_t.append(self.aval_list[g])
+            self.aval_eval_list_t.append(self.aval_eval_list[g])
 
-        # constant  # TODO: check how it should be
-        pre_shift = tf.constant(value=np.zeros(
-            shape=[self.train_batch_size]), dtype=tf.int32)
-        pre_mul_choice = tf.constant(value=np.zeros(
-            shape=[self.train_batch_size]), dtype=tf.int32)
+        # constant
         self.action_indexes = []
-        pre_shift_eval = tf.constant(value=np.zeros(
-            shape=[self.eval_batch_size]), dtype=tf.int32)
-        pre_max_choice_eval = tf.constant(value=np.zeros(
-            shape=[self.eval_batch_size]), dtype=tf.int32)
         self.action_indexes_eval = []
 
         # get action index
@@ -1251,7 +1264,8 @@ class GRLRS():
                 self.forward_prob_upper = tf.nn.softmax(tf.matmul(h, self.W_upper[k]) + self.b_upper[k], axis=1)
             else:
                 h = tf.nn.relu(tf.matmul(h, self.W_upper[k]) + self.b_upper[k])
-        self.aval_item_num_upper = tf.transpose(tf.squeeze(tf.reduce_sum(self.aval_list[:, :, :, 0], axis=1)))
+        self.aval_item_num_upper = tf.concat([tf.expand_dims(tf.reduce_sum(tf.transpose(self.aval_list[g], [2, 0, 1])[0], axis=0), 1)
+                                    for g in range(self.forward_env.genre_cnt)], 1)
         self.aval_prob_upper = self.aval_item_num_upper / \
             tf.reduce_sum(self.aval_item_num_upper, axis=1, keep_dims=True)
         self.mix_prob_upper = tf.clip_by_value(
@@ -1260,12 +1274,15 @@ class GRLRS():
             self.mix_prob_upper / tf.reduce_sum(self.mix_prob_upper, axis=1, keep_dims=True))
         self.pre_mul_choice_upper = tf.cast(tf.squeeze(tf.multinomial(
             logits=self.real_prob_logit_upper, num_samples=1)), tf.float32)
-        # Don't need to update self.aval_list
         self.action_index_upper = tf.cast(self.pre_mul_choice_upper, tf.int32)
 
         ## Genre-specific sub-tree
         for g in range(self.forward_env.genre_cnt):
             action_index = tf.constant(value=np.zeros(shape=[self.train_batch_size]), dtype=tf.int32)
+            pre_shift = tf.constant(value=np.zeros(
+                shape=[self.train_batch_size]), dtype=tf.int32)
+            pre_mul_choice = tf.constant(value=np.zeros(
+                shape=[self.train_batch_size]), dtype=tf.int32)
             for i in range(self.bc_dims):
                 forward_index = self.node_num_before_depth_i(i) + self.child_num * pre_shift + tf.cast(pre_mul_choice, tf.int32)
                 if i == 0:
@@ -1313,21 +1330,25 @@ class GRLRS():
                 self.forward_prob_upper_eval = tf.nn.softmax(tf.matmul(h, self.W_upper[k]) + self.b_upper[k], axis=1)
             else:
                 h = tf.nn.relu(tf.matmul(h, self.W_upper[k]) + self.b_upper[k])
-        self.aval_item_num_upper_eval = tf.transpose(tf.squeeze(tf.reduce_sum(self.aval_list[:, :, :, 0], axis=1)))
+        self.aval_item_num_upper_eval = tf.concat([tf.expand_dims(tf.reduce_sum(tf.transpose(self.aval_eval_list[g], [2, 0, 1])[0], axis=0), 1)
+                                                    for g in range(self.forward_env.genre_cnt)], 1)
         self.aval_prob_upper_eval = self.aval_item_num_upper_eval / \
             tf.reduce_sum(self.aval_item_num_upper_eval, axis=1, keep_dims=True)
         self.mix_prob_upper_eval = tf.clip_by_value(
-            self.forward_prob_upper_eval, clip_value_min=1e-30, clip_value_max=1.0) * self.aval_prob_upper
+            self.forward_prob_upper_eval, clip_value_min=1e-30, clip_value_max=1.0) * self.aval_prob_upper_eval
         self.real_prob_logit_upper_eval = tf.log(
             self.mix_prob_upper_eval / tf.reduce_sum(self.mix_prob_upper_eval, axis=1, keep_dims=True))
         self.pre_max_choice_upper_eval = tf.cast(tf.squeeze(tf.argmax(
-            input=self.real_prob_logit_upper, axis=1)), tf.float32)
-        # Don't need to update self.aval_list
-        self.action_index_upper_eval = tf.cast(self.pre_mul_choice_upper, tf.int32)
+            input=self.real_prob_logit_upper_eval, axis=1)), tf.float32)
+        self.action_index_upper_eval = tf.cast(self.pre_max_choice_upper_eval, tf.int32)
 
         ## Genre-specific sub-tree
         for g in range(self.forward_env.genre_cnt):
             action_index_eval = tf.constant(value=np.zeros(shape=[self.eval_batch_size]), dtype=tf.int32)
+            pre_shift_eval = tf.constant(value=np.zeros(
+                shape=[self.eval_batch_size]), dtype=tf.int32)
+            pre_max_choice_eval = tf.constant(value=np.zeros(
+                shape=[self.eval_batch_size]), dtype=tf.int32)
             for i in range(self.bc_dims):
                 forward_index_eval = self.node_num_before_depth_i(
                     i) + self.child_num * pre_shift_eval + tf.cast(pre_max_choice_eval, tf.int32)
@@ -1368,26 +1389,38 @@ class GRLRS():
         self.eval_probs = tf.concat(self.eval_probs, axis=1)    # Unused till now
 
         # update avalable children items at each node
-        self.update_aval_list = tf.assign(self.aval_list_t, self.aval_list)
-        self.update_aval_eval_list = tf.assign(
-            self.aval_eval_list_t, self.aval_eval_list)
+        self.update_aval_list = [tf.assign(self.aval_list_t[g], tf.where(
+                tf.tile(tf.expand_dims(tf.expand_dims(tf.equal(self.action_index_upper, tf.constant(g)), axis=0), axis=2),
+                    [self.child_num, 1, self.node_num_before_depth_i(self.bc_dims)]), 
+                self.aval_list[g], self.aval_list_t[g]))
+            for g in range(self.forward_env.genre_cnt)]
+        self.update_aval_eval_list = [tf.assign(self.aval_eval_list_t[g], tf.where(
+                tf.tile(tf.expand_dims(tf.expand_dims(tf.equal(self.action_index_upper_eval, tf.constant(g)), axis=0), axis=2),
+                    [self.child_num, 1, self.node_num_before_depth_i(self.bc_dims)]), 
+                self.aval_eval_list[g], self.aval_eval_list_t[g]))
+            for g in range(self.forward_env.genre_cnt)]
 
-        # assign avalable children items at each node # TODO: DON't understand
-        self.aval_list_v = tf.placeholder(
-            dtype=tf.float32, shape=self.aval_list_t.get_shape())
-        self.assign_aval_list = tf.assign(self.aval_list_t, self.aval_list_v)
-        self.aval_eval_list_v = tf.placeholder(
-            dtype=tf.float32, shape=self.aval_eval_list_t.get_shape())
-        self.assign_aval_eval_list = tf.assign(
-            self.aval_eval_list_t, self.aval_eval_list_v)
+        # assign avalable children items at each node
+        self.aval_list_v = [tf.placeholder(dtype=tf.float32, shape=self.aval_list_t[g].get_shape()) 
+                            for g in range(self.forward_env.genre_cnt)]
+        self.assign_aval_list = [tf.assign(self.aval_list_t[g], self.aval_list_v[g]) 
+                                    for g in range(self.forward_env.genre_cnt)]
+        self.aval_eval_list_v = [tf.placeholder(dtype=tf.float32, shape=self.aval_eval_list_t[g].get_shape()) 
+                                    for g in range(self.forward_env.genre_cnt)]
+        self.assign_aval_eval_list = [tf.assign(self.aval_eval_list_t[g], self.aval_eval_list_v[g])
+                                        for g in range(self.forward_env.genre_cnt)]
 
         # get action
-        self.forward_sampled_actions = [tf.nn.embedding_lookup(self.code_to_id[g], self.action_indexes[g]) 
-                                        for g in range(self.forward_env.genre_cnt)]
-        self.forward_sampled_actions_eval = [tf.nn.embedding_lookup(self.code_to_id[g], self.action_indexes_eval[g])
-                                             for g in range(self.forward_env.genre_cnt)]
+        self.forward_sampled_actions = tf.gather_nd([tf.nn.embedding_lookup(self.code_to_real_id[g], self.action_indexes[g])
+                                                        for g in range(self.forward_env.genre_cnt)],
+                                                    tf.concat([tf.expand_dims(self.action_index_upper, axis=1),
+                                                               tf.expand_dims(tf.range(self.train_batch_size), axis=1)], axis=1))
+        self.forward_sampled_actions_eval = tf.gather_nd([tf.nn.embedding_lookup(self.code_to_real_id[g], self.action_indexes_eval[g])
+                                                            for g in range(self.forward_env.genre_cnt)],
+                                                         tf.concat([tf.expand_dims(self.action_index_upper_eval, axis=1),
+                                                                    tf.expand_dims(tf.range(self.eval_batch_size), axis=1)], axis=1))
 
-        # get policy network outputs    # TODO: Later.
+        # get policy network outputs
         # Get from the above loop.
         # pn_outputs:  [(batch, genre_cnt, child_num)] * bc_dims
         self.pn_outputs = [tf.transpose(tf.convert_to_tensor(self.pn_outputs[i], dtype=tf.float32), [1,0,2]) for i in range(self.bc_dims)]
@@ -1395,14 +1428,16 @@ class GRLRS():
         self.bias_variables = self.b_list + self.rnn_variables[3:]
         self.weight_variables = self.W_list + self.rnn_variables[:3]
 
-        self.real_pn_outputs = [tf.nn.embedding_lookup(self.pn_outputs[i], self.cur_genre) for i in range(self.bc_dims)]
+        self.real_pn_outputs = [tf.gather_nd(self.pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1),
+                                                                                      tf.expand_dims(self.cur_genre, axis=1)], axis=1))
+                                for i in range(self.bc_dims)]
         self.train_mse = tf.reduce_mean(tf.square(tf.concat(self.real_pn_outputs, axis=1) - 1.0/self.child_num), axis=1)
-        self.a_code = tf.nn.embedding_lookup(self.bc_embeddings, tf.concat([self.cur_genre, self.cur_action], axis=1))
+        self.a_code = tf.nn.embedding_lookup(tf.nn.embedding_lookup(self.bc_embeddings, self.cur_genre), self.cur_action)
         self.log_pi = tf.reduce_sum(
             tf.concat(
                 [tf.expand_dims(
                     tf.log(tf.clip_by_value(
-                        tf.gather_nd(self.pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1), self.cur_genre, tf.cast(self.a_code[:, i:i+1], tf.int32)], axis=1)), clip_value_min=1e-30, clip_value_max=1.0)
+                        tf.gather_nd(self.pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1), tf.expand_dims(self.cur_genre, axis=1), tf.cast(self.a_code[:, i:i+1], tf.int32)], axis=1)), clip_value_min=1e-30, clip_value_max=1.0)
                     ), axis=1)
                  for i in range(self.bc_dims)], axis=1), axis=1)
 
@@ -1481,40 +1516,42 @@ class GRLRS():
         return q_matrix
 
     def update_avalable_items(self, sampled_items):
-        sampled_codes = self.id_to_code[sampled_items]
         if self.is_eval:
-            aval_val_tmp = np.tile(np.expand_dims(self.aval_val, axis=1), [
-                                   1, self.eval_batch_size, 1])
+            aval_val_tmp = np.tile(np.expand_dims(self.aval_val, axis=2), [
+                                   1, 1, self.eval_batch_size, 1])
         else:
-            aval_val_tmp = np.tile(np.expand_dims(self.aval_val, axis=1), [
-                                   1, self.train_batch_size, 1])
-        for i in range(len(sampled_codes)):
-            code = sampled_codes[i]
+            aval_val_tmp = np.tile(np.expand_dims(self.aval_val, axis=2), [
+                                   1, 1, self.train_batch_size, 1])
+        for i in range(len(sampled_items)):
+            genre_i = self.forward_env.item_genre[sampled_items[i]]
+            subId_i = self.forward_env.item_subId[sampled_items[i]]
+            code = self.id_to_code[genre_i][subId_i]
             index = 0
             for c in code:
                 c = int(c)
-                aval_val_tmp[c][i][index] -= 1
+                aval_val_tmp[genre_i][c][i][index] -= 1
                 index = self.child_num * index + 1 + c
         if self.is_eval:
             self.sess.run(self.assign_aval_eval_list, feed_dict={
-                          self.aval_eval_list_v: aval_val_tmp})
+                            i: d for i, d in zip(self.aval_eval_list_v, aval_val_tmp)})
         else:
             self.sess.run(self.assign_aval_list, feed_dict={
-                          self.aval_list_v: aval_val_tmp})
+                            i: d for i, d in zip(self.aval_list_v, aval_val_tmp)})
         del aval_val_tmp
         gc.collect()
 
     # to start with, the hidden state is all zero, for a cold-start user, here the first action is not given by the policy but random or popularity
     def _get_initial_ars(self, batch_size=-1):
-        result = [[[]], [[]], [[]]]
+        result = [[[]], [[]], [[]], [[]]]
         if batch_size == -1:
             batch_size = self.train_batch_size
         for i in range(batch_size):
             item_id = random.randint(0, self.item_num - 1)
             reward = self.env[i].get_reward(item_id)
             result[0][0].append(item_id)
-            result[1][0].append(reward[0])
-            result[2][0].append((self.env[i].get_statistic()))
+            result[1][0].append(self.forward_env.item_genre[item_id])
+            result[2][0].append(reward[0])
+            result[3][0].append((self.env[i].get_statistic()))
         return result
 
     def train(self):
@@ -1533,8 +1570,9 @@ class GRLRS():
         # sample actions according to the current policy
         while True:
             feed_dict = {self.forward_action: ars[0][step_count],
-                         self.forward_statistic: ars[2][step_count],
-                         self.forward_reward: ars[1][step_count],
+                         self.forward_genre: ars[1][step_count],
+                         self.forward_reward: ars[2][step_count],
+                         self.forward_statistic: ars[3][step_count],
                          self.forward_rnn_state: rnn_state}
 
             # update avalable items and sample actions in a run since different multinomial sampling would lead to different result if splitted
@@ -1546,19 +1584,21 @@ class GRLRS():
             ars[0].append([])
             ars[1].append([])
             ars[2].append([])
+            ars[3].append([])
             step_count += 1
             for j in range(self.train_batch_size):
                 reward = self.env[j].get_reward(sampled_action[j])
                 ars[0][-1].append(sampled_action[j])
-                ars[1][-1].append(reward[0])
-                ars[2][-1].append(self.env[j].get_statistic())
+                ars[1][-1].append(self.forward_env.item_genre[sampled_action[j]])
+                ars[2][-1].append(reward[0])
+                ars[3][-1].append(self.env[j].get_statistic())
                 if reward[1]:
                     stop_flag = True
             if stop_flag:
                 break
 
         # standardize the q-values user-wisely
-        qs = np.array(ars[1])[1:]
+        qs = np.array(ars[2])[1:]
         c_reward = np.zeros([len(qs[0])])
         for i in reversed(range(len(qs))):
             c_reward = self.discount_factor * c_reward + qs[i]
@@ -1572,8 +1612,9 @@ class GRLRS():
         # update the policy utilizing the REINFORCE algorithm
         for i in range(step_count):
             feed_dict = {self.forward_action: ars[0][i],
-                         self.forward_reward: ars[1][i],
-                         self.forward_statistic: ars[2][i],
+                         self.forward_genre: ars[1][i],
+                         self.forward_reward: ars[2][i],
+                         self.forward_statistic: ars[3][i],
                          self.forward_rnn_state: rnn_state,
                          self.cur_action: ars[0][i + 1],
                          self.cur_q: qs[i]}
@@ -1610,8 +1651,9 @@ class GRLRS():
             entropy_list.append([])
             while True:
                 feed_dict = {self.forward_action: ars[0][step_count][start:end],
-                             self.forward_reward: ars[1][step_count][start:end],
-                             self.forward_statistic: ars[2][step_count][start:end],
+                             self.forward_genre: ars[1][step_count][start:end],
+                             self.forward_reward: ars[2][step_count][start:end],
+                             self.forward_statistic: ars[3][step_count][start:end],
                              self.forward_rnn_state: rnn_state}
                 run_list = [self.forward_sampled_actions_eval, self.rnn_state,
                             self.eval_probs, self.update_aval_eval_list]
@@ -1626,18 +1668,20 @@ class GRLRS():
                     ars[0].append([])
                     ars[1].append([])
                     ars[2].append([])
+                    ars[3].append([])
                 for j in range(self.eval_batch_size):
                     reward = self.env[start + j].get_reward(sampled_action[j])
                     ars[0][step_count].append(sampled_action[j])
-                    ars[1][step_count].append(reward[0])
-                    ars[2][step_count].append(
+                    ars[1][step_count].append(self.forward_env.item_genre[sampled_action[j]])
+                    ars[2][step_count].append(reward[0])
+                    ars[3][step_count].append(
                         self.env[start + j].get_statistic())
                     if reward[1]:
                         stop_flag = True
                 if stop_flag:
                     break
 
-        reward_list = np.transpose(np.array(ars[1]))[:self.user_num]
+        reward_list = np.transpose(np.array(ars[2]))[:self.user_num]
         train_ave_reward = np.mean(reward_list[:self.boundry_user_id])
         test_ave_reward = np.mean(
             reward_list[self.boundry_user_id:self.user_num])
@@ -1668,6 +1712,11 @@ class GRLRS():
 
         # save the model
         params = self.sess.run(self.W_list + self.b_list)
+        # if the folder does not exist, creat it.
+        if not os.path.exists('../data/result'):
+            os.makedirs('../data/result')
+        if not os.path.exists('../data/result/result_log'):
+            os.makedirs('../data/result/result_log')
         model = {'W_list': params[:len(self.W_list)], 'b_list': params[len(
             self.W_list):], 'result_file_path': self.result_file_path}
         utils.pickle_save(model, self.save_model_path +
