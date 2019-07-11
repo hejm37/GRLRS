@@ -1316,7 +1316,7 @@ class GRLRS():
                 aval_prob = aval_item_num_list / tf.reduce_sum(aval_item_num_list, axis=1, keep_dims=True)
                 mix_prob = tf.clip_by_value(forward_prob, clip_value_min=1e-30, clip_value_max=1.0) * aval_prob
                 real_prob_logit = tf.log(mix_prob / tf.reduce_sum(mix_prob, axis=1, keep_dims=True))
-                pre_mul_choice = tf.cast(tf.squeeze(tf.multinomial(logits=real_prob_logit, num_samples=1)), tf.float32)
+                pre_mul_choice = tf.clip_by_value(tf.cast(tf.squeeze(tf.multinomial(logits=real_prob_logit, num_samples=1)), tf.float32), clip_value_min=0, clip_value_max=9)
                 self.aval_list[g] = self.aval_list[g] - tf.concat([tf.expand_dims(tf.one_hot(indices=forward_index, depth=self.node_num_before_depth_i(self.bc_dims)) * tf.expand_dims(tf.cast(
                     tf.equal(pre_mul_choice, tf.constant(np.ones(shape=[self.train_batch_size]) * j, dtype=tf.float32)), tf.float32), axis=1), axis=0) for j in range(self.child_num)], axis=0) 
                 action_index = action_index * self.child_num + tf.cast(pre_mul_choice, tf.int32)
@@ -1374,8 +1374,10 @@ class GRLRS():
 
                 self.eval_probs.append(forward_prob_eval)   # TODO
                 pre_shift_eval = self.child_num * pre_shift_eval + tf.cast(pre_max_choice_eval, tf.int32)
-                gather_index_eval = tf.transpose(tf.reshape(tf.concat([tf.reshape(tf.tile(tf.expand_dims(tf.range(self.child_num), 1), [1, self.eval_batch_size]), [-1, 1]), tf.tile(tf.concat([tf.expand_dims(
-                    tf.range(self.eval_batch_size), axis=1), tf.expand_dims(forward_index_eval, axis=1)], axis=1), [self.child_num, 1])], axis=1), [self.child_num, self.eval_batch_size, 3]), [1, 0, 2])
+                gather_index_eval = tf.transpose(tf.reshape(tf.concat([tf.reshape(tf.tile(tf.expand_dims(tf.range(self.child_num), 1), [1, self.eval_batch_size]), [-1, 1]),
+                                                                       tf.tile(tf.concat([tf.expand_dims(tf.range(self.eval_batch_size), axis=1), 
+                                                                                          tf.expand_dims(forward_index_eval, axis=1)], axis=1), [self.child_num, 1])], axis=1),
+                                                            [self.child_num, self.eval_batch_size, 3]), [1, 0, 2])
                 aval_item_num_eval_list = tf.gather_nd(self.aval_eval_list[g], gather_index_eval)
                 aval_prob_eval = aval_item_num_eval_list / tf.reduce_sum(aval_item_num_eval_list, axis=1, keep_dims=True)
                 mix_prob_eval = tf.clip_by_value(forward_prob_eval, clip_value_min=1e-30, clip_value_max=1.0) * aval_prob_eval
@@ -1617,6 +1619,7 @@ class GRLRS():
                          self.forward_statistic: ars[3][i],
                          self.forward_rnn_state: rnn_state,
                          self.cur_action: ars[0][i + 1],
+                         self.cur_genre: ars[1][i + 1],
                          self.cur_q: qs[i]}
             _, rnn_state = self.sess.run(
                 [self.train_op, self.rnn_state], feed_dict=feed_dict)
