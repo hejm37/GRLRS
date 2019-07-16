@@ -59,7 +59,7 @@ class Env():
 
             self.user = set()
             self.item = set()
-            for i, j, k in rating:
+            for i, j, _ in rating:
                 self.user.add(int(i))
                 self.item.add(int(j))
 
