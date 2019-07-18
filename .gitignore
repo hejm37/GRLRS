@@ -7,3 +7,4 @@ data/run_time/*
 src/__pycache__
 
 preprocess/*
+postprocess/*

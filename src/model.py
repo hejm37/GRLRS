@@ -327,16 +327,21 @@ class Tree():
         id_to_code = [np.zeros(dtype=float, shape=[self.env.genre_item_nums[g], self.bc_dims])
                         for g in range(self.env.genre_cnt)]
         code_to_id, code_to_real_id = [], []
-        id_to_vector = None
+        raw_id_to_vector = None
         if self.clustering_type != 'RANDOM':
             if not os.path.exists(self.clustering_vector_file_path):
                 run_time_tools.clustering_vector_constructor(
                     self.config, self.sess)
-            id_to_vector = np.loadtxt(
+            raw_id_to_vector = np.loadtxt(
                 self.clustering_vector_file_path, delimiter='\t')
+        
+        id_to_vector = []
+        for g in range(self.env.genre_cnt):
+            id_to_vector.append(raw_id_to_vector[self.env.genre_items[g]])
+
         for g in range(self.env.genre_cnt):
             self.hierarchical_code(list(range(self.env.genre_item_nums[g])), (0, int(
-                math.pow(self.child_num, self.bc_dims))), id_to_code[g], id_to_vector)
+                math.pow(self.child_num, self.bc_dims))), id_to_code[g], id_to_vector[g])
             code_to_id_g, code_to_real_id_g = self.get_code_to_id(id_to_code[g], g)
             code_to_id.append(code_to_id_g)
             code_to_real_id.append(code_to_real_id_g)
