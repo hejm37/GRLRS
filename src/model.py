@@ -1125,7 +1125,7 @@ class GRLRS():
         code_name = self.config['ENV']['RATING_FILE']
         self.result_file_path = '../data/result/result_log/' + \
             time.strftime('%Y%m%d%H%M%S') + '_' + \
-            self.config['ENV']['ALPHA'] + '_' + code_name
+            self.config['ENV']['ALPHA'] + '_' + self.config['ENV']['BETA'] + '_' + code_name
         self.rnn_file_path = '../data/run_time/%s_rnn_model_%s' % (
             code_name, self.config['TPGR']['RNN_MODEL_VS'])
         self.load_model = self.config['TPGR']['LOAD_MODEL'] == 'T'
