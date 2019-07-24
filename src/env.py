@@ -28,6 +28,7 @@ class Env():
 
         # calculate boredom
         self.beta = float(self.config['ENV']['BETA'])
+        self.gamma = float(self.config['ENV']['GAMMA'])
         self.boredom_len = int(self.config['ENV']['BOREDOM_LENGTH'])
         self.boredom_order = int(self.config['ENV']['BOREDOM_ORDER'])
         self.genre_cnt = int(self.config['GENRE']['GENRE_COUNT'])
@@ -59,7 +60,7 @@ class Env():
 
             self.user = set()
             self.item = set()
-            for i, j, _ in rating:
+            for i, j, k in rating:
                 self.user.add(int(i))
                 self.item.add(int(j))
 
@@ -132,18 +133,18 @@ class Env():
                 pass
             else:
                 # normalize the reward value
-                reward[0] = self.a * r + self.b
+                rating = self.a * r + self.b
 
         self.step_count += 1
         sr = self.con_pos_count - self.con_neg_count
-        if reward[0] < 0:
+        if rating < 0:
             self.con_neg_count += 1
             self.all_neg_count += 1
             self.con_not_pos_count += 1
             self.con_pos_count = 0
             self.con_not_neg_count = 0
             self.con_zero_count = 0
-        elif reward[0] > 0:
+        elif rating > 0:
             self.con_pos_count += 1
             self.all_pos_count += 1
             self.con_not_neg_count += 1
@@ -163,7 +164,8 @@ class Env():
                 len(self.history_items) == self.item_num:
             reward[1] = True
 
-        reward[0] += self.alpha * sr + self.beta * self.get_boredom(item_id)
+        reward[0] = self.gamma * rating + self.alpha * sr + \
+                    self.beta * self.get_boredom(item_id)
         return (reward[0], reward[1])
 
     def get_statistic(self):
