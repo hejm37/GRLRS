@@ -130,7 +130,7 @@ class Env():
         else:
             r = self.get_rating(item_id)
             if r == 0:
-                pass
+                rating = 0
             else:
                 # normalize the reward value
                 rating = self.a * r + self.b
