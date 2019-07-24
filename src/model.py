@@ -1200,8 +1200,8 @@ class GRLRS():
 
         self.action_embeddings = tf.constant(
             dtype=tf.float32, value=self.forward_env.item_embedding)
-        self.bc_embeddings = [tf.constant(dtype=tf.float32, value=self.id_to_code[i])
-                                for i in range(self.forward_env.genre_cnt)]
+        self.bc_embeddings = [tf.constant(dtype=tf.float32, value=self.id_to_code[g])
+                                for g in range(self.forward_env.genre_cnt)]
 
         # RNN input
         self.forward_a_emb = tf.nn.embedding_lookup(            # forward action embedding
@@ -1267,6 +1267,7 @@ class GRLRS():
         for k in range(len(self.W_upper)):
             if k == (len(self.W_upper) - 1):
                 self.forward_prob_upper = tf.nn.softmax(tf.matmul(h, self.W_upper[k]) + self.b_upper[k], axis=1)
+                self.pn_outputs_upper = self.forward_prob_upper
             else:
                 h = tf.nn.relu(tf.matmul(h, self.W_upper[k]) + self.b_upper[k])
         self.aval_item_num_upper = tf.concat([tf.expand_dims(tf.reduce_sum(tf.transpose(self.aval_list[g], [2, 0, 1])[0], axis=0), 1)
@@ -1427,19 +1428,25 @@ class GRLRS():
                                                          tf.concat([tf.expand_dims(self.action_index_upper_eval, axis=1),
                                                                     tf.expand_dims(tf.range(self.eval_batch_size), axis=1)], axis=1))
 
+        # get l2 loss
+        self.bias_variables = sum(self.b_list, []) + self.b_upper + self.rnn_variables[3:]
+        self.weight_variables = sum(self.W_list, []) + self.W_upper + self.rnn_variables[:3]
+        self.l2_norm = tf.add_n([tf.nn.l2_loss(item) for item in (
+            self.weight_variables + self.bias_variables)])
+
+        # get upper policy mse and log_pi
+
         # get policy network outputs
         # Get from the above loop.
-        # pn_outputs:  [(batch, genre_cnt, child_num)] * bc_dims
+        # pn_outputs:  convert to [(batch, genre_cnt, child_num)] * bc_dims
         self.pn_outputs = [tf.transpose(tf.convert_to_tensor(self.pn_outputs[i], dtype=tf.float32), [1,0,2]) for i in range(self.bc_dims)]
-
-        self.bias_variables = self.b_list + self.rnn_variables[3:]
-        self.weight_variables = self.W_list + self.rnn_variables[:3]
-
         self.real_pn_outputs = [tf.gather_nd(self.pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1),
                                                                                       tf.expand_dims(self.cur_genre, axis=1)], axis=1))
                                 for i in range(self.bc_dims)]
-        self.train_mse = tf.reduce_mean(tf.square(tf.concat(self.real_pn_outputs, axis=1) - 1.0/self.child_num), axis=1)
-        self.a_code = tf.nn.embedding_lookup(tf.nn.embedding_lookup(self.bc_embeddings, self.cur_genre), self.cur_action)
+        self.train_mse = tf.reduce_mean(tf.square(tf.concat([tf.concat(self.real_pn_outputs, axis=1) - 1.0/self.child_num,
+                                                             self.pn_outputs_upper - 1.0/self.forward_env.genre_cnt], axis=1)), axis=1)
+        self.cur_subId = tf.gather_nd(self.forward_env.item_subId, tf.expand_dims(self.cur_action, axis=1))
+        self.a_code = tf.nn.embedding_lookup(tf.nn.embedding_lookup(self.bc_embeddings, self.cur_genre), self.cur_subId)
         self.log_pi = tf.reduce_sum(
             tf.concat(
                 [tf.expand_dims(
@@ -1448,9 +1455,20 @@ class GRLRS():
                     ), axis=1)
                  for i in range(self.bc_dims)], axis=1), axis=1)
 
-        self.negative_likelyhood = -self.log_pi
-        self.l2_norm = tf.add_n([tf.nn.l2_loss(item) for item in (
-            self.weight_variables + self.bias_variables)])
+        self.log_pi_upper = tf.log(tf.clip_by_value(tf.gather_nd(self.pn_outputs_upper, 
+            tf.concat([
+                tf.expand_dims(tf.range(self.train_batch_size), axis=1),
+                tf.expand_dims(self.cur_genre, axis=1)
+            ], axis=1)), clip_value_min=1e-30, clip_value_max=1.0))
+        
+        # self.log_pi = tf.reduce_sum(
+        #     tf.concat(
+        #         [tf.expand_dims(
+        #             tf.log(tf.clip_by_value(
+        #                 tf.gather_nd(self.real_pn_outputs[i], tf.concat([tf.expand_dims(tf.range(self.train_batch_size), axis=1), tf.cast(self.a_code[:, i:i+1], tf.int32)], axis=1)), clip_value_min=1e-30, clip_value_max=1.0)
+        #             ), axis=1)
+        #          for i in range(self.bc_dims)], axis=1), axis=1)
+        self.negative_likelyhood = -self.log_pi - self.log_pi_upper
         self.weighted_negative_likelyhood_with_l2_norm = self.negative_likelyhood * \
             self.cur_q + self.entropy_factor * self.train_mse + self.l2_factor * self.l2_norm
         self.train_op = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(
