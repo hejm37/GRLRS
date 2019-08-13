@@ -192,7 +192,7 @@ class PRE_TRAIN():
 
         for i in range(self.pre_train_seq_length):
             actions = ars[0][i]
-            rewards = np.array(ars[1][i])
+            rewards = np.array(ars[2][i])
 
             # calculate reward ground truth
             for index in range(len(ground_truth)):
@@ -273,7 +273,7 @@ class PRE_TRAIN():
         # evaluate
         for i in range(self.pre_train_seq_length):
             actions = ars[0][i]
-            rewards = np.array(ars[1][i])
+            rewards = np.array(ars[2][i])
 
             for index in range(len(ground_truth)):
                 ground_truth[index][actions[index]] = rewards[index]
