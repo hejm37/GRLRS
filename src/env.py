@@ -11,7 +11,7 @@ import os
 
 class Env():
     def __init__(self, config, user_num=None, item_num=None,
-                 r_matrix=None, user_to_rele_num=None):
+                 r_matrix=None, user_to_rele_num=None, genre_package=None):
         self.config = config
         self.action_dim = int(self.config['META']['ACTION_DIM'])
         self.episode_length = int(self.config['META']['EPISODE_LENGTH'])
@@ -32,28 +32,35 @@ class Env():
         self.boredom_len = int(self.config['ENV']['BOREDOM_LENGTH'])
         self.boredom_order = int(self.config['ENV']['BOREDOM_ORDER'])
         self.genre_cnt = int(self.config['GENRE']['GENRE_COUNT'])
-        self.genre_paras = [[] for i in range(self.genre_cnt)]   # dict to list
-        genres = [self.config['GENRE']['GENRE_'+str(i)] 
-                    for i in range(self.genre_cnt)]     # name only used in visulization and read genre_paras
-        for i in range(self.genre_cnt):
-            for j in range(self.boredom_order + 1):
-                self.genre_paras[i].append(float(self.config['GENRE'][genres[i] + '_' + str(j)]))
 
-        # read movies' genres file
-        genre_file_path = '../data/rating/' + self.config['ENV']['GENRE_FILE']
-        self.item_genre, self.item_subId, self.genre_items = \
-            utils.read_genre_file(genre_file_path, self.genre_cnt)
-        self.genre_item_nums = [len(items) for items in self.genre_items]
-
-        # read rating file
+        # read rating file and genre file
         if not user_num is None:
+            # Genre part
+            self.genre_paras, self.item_genre, self.item_subId, self.genre_items = genre_package
+            self.genre_item_nums = [len(items) for items in self.genre_items]
+
             self.user_num = user_num
             self.item_num = item_num
             self.r_matrix = r_matrix
             self.user_to_rele_num = user_to_rele_num
             self.boundry_user_id = int(self.user_num * 0.8)
             self.test_user_num = self.user_num - self.boundry_user_id
+
         else:
+            # Genre part
+            self.genre_paras = [[] for i in range(self.genre_cnt)]   # dict to list
+            genres = [self.config['GENRE']['GENRE_'+str(i)] 
+                        for i in range(self.genre_cnt)]     # name only used in visulization and read genre_paras
+            for i in range(self.genre_cnt):
+                for j in range(self.boredom_order + 1):
+                    self.genre_paras[i].append(float(self.config['GENRE'][genres[i] + '_' + str(j)]))
+    
+            # read movies' genres file
+            genre_file_path = '../data/rating/' + self.config['ENV']['GENRE_FILE']
+            self.item_genre, self.item_subId, self.genre_items = \
+                utils.read_genre_file(genre_file_path, self.genre_cnt)
+            self.genre_item_nums = [len(items) for items in self.genre_items]
+
             rating_file_path = '../data/rating/' + \
                 self.config['ENV']['RATING_FILE']
             rating = np.loadtxt(fname=rating_file_path, delimiter='\t')
@@ -104,7 +111,8 @@ class Env():
                                              dtype=float, delimiter='\t')
 
     def get_init_data(self):
-        return self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num
+        genre_package = [self.genre_paras, self.item_genre, self.item_subId, self.genre_items]
+        return self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num, genre_package
 
     def reset(self, user_id):
         self.user_id = user_id

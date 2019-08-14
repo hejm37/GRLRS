@@ -45,9 +45,9 @@ class PRE_TRAIN():
 
         self.forward_env = Env(self.config)
         self.boundry_user_id = self.forward_env.boundry_user_id
-        self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num = self.forward_env.get_init_data()
+        self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num, genre_package = self.forward_env.get_init_data()
         self.env = [Env(self.config, self.user_num, self.item_num, self.r_matrix,
-                        self.user_to_rele_num) for i in range(max(self.user_num, self.batch_size))]
+                        self.user_to_rele_num, genre_package) for i in range(max(self.user_num, self.batch_size))]
 
         self.pre_training_steps = 0
         self.make_graph()
@@ -192,7 +192,7 @@ class PRE_TRAIN():
 
         for i in range(self.pre_train_seq_length):
             actions = ars[0][i]
-            rewards = np.array(ars[1][i])
+            rewards = np.array(ars[2][i])
 
             # calculate reward ground truth
             for index in range(len(ground_truth)):
@@ -273,7 +273,7 @@ class PRE_TRAIN():
         # evaluate
         for i in range(self.pre_train_seq_length):
             actions = ars[0][i]
-            rewards = np.array(ars[1][i])
+            rewards = np.array(ars[2][i])
 
             for index in range(len(ground_truth)):
                 ground_truth[index][actions[index]] = rewards[index]
@@ -1139,7 +1139,7 @@ class GRLRS():
             ',')] if self.config['TPGR']['HIDDEN_UNITS'].lower() != 'none' else []
 
         self.forward_env = Env(self.config)
-        self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num = self.forward_env.get_init_data()
+        self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num, genre_package = self.forward_env.get_init_data()
 
         self.boundry_user_id = self.forward_env.boundry_user_id
         self.test_user_num = int(
@@ -1149,7 +1149,7 @@ class GRLRS():
                         if item_num != 0 else 0
                         for item_num in self.forward_env.genre_item_nums])        # DEBUG0, use the max depth
 
-        self.env = [Env(self.config, self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num) for i in range(
+        self.env = [Env(self.config, self.user_num, self.item_num, self.r_matrix, self.user_to_rele_num, genre_package) for i in range(
             max(self.train_batch_size, self.eval_batch_size * int(math.ceil(self.user_num / self.eval_batch_size))))]
 
         ###
