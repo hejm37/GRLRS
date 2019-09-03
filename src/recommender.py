@@ -39,8 +39,8 @@ class Recommender():
             log.log('end constructing tree', True)
 
         # training model
-        log.log('start training tpgr', True)
-        tpgr = TPGR(self.config, self.sess)
+        log.log('start training grlrs', True)
+        tpgr = GRLRS(self.config, self.sess)
         for i in range(0, max_training_step):
             if i % log_step == 0:
                 tpgr.evaluate()
